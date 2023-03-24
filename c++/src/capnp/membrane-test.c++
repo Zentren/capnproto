@@ -406,6 +406,77 @@ KJ_TEST("revoke membrane") {
       thing.passThroughRequest().send().ignoreResult().wait(env.waitScope));
 }
 
+KJ_TEST("Revoke issue") {
+  class RevocablePolicy : public capnp::MembranePolicy, public kj::Refcounted {
+  private:
+	  explicit RevocablePolicy(kj::PromiseFulfillerPair<void>&& pair)
+      : promises(pair.promise.fork()),
+       revoker(kj::mv(pair.fulfiller)) {}
+  public:
+    RevocablePolicy() : RevocablePolicy(kj::newPromiseAndFulfiller<void>()) {}
+
+    /// Lets inbound calls through unchanged.
+    kj::Maybe<capnp::Capability::Client> inboundCall(uint64_t interfaceId, uint16_t methodId, capnp::Capability::Client target) override {
+      return nullptr;
+    }
+    /// Lets outbound calls through unchanged.
+    kj::Maybe<capnp::Capability::Client> outboundCall(uint64_t interfaceId, uint16_t methodId, capnp::Capability::Client target) override {
+      return nullptr;
+    }
+    /// Returns promises that reject once policy is revoked.
+    kj::Maybe<kj::Promise<void>> onRevoked() override {
+      return promises.addBranch();
+    }
+
+    kj::Own<capnp::MembranePolicy> addRef() override {
+      return kj::addRef(*this);
+    }
+
+    /// Permanently revokes this policy.
+    void revoke() {
+      revoker->reject(KJ_EXCEPTION(DISCONNECTED, "Revoked."));
+    }
+
+	private:
+    kj::ForkedPromise<void> promises;
+    kj::Own<kj::PromiseFulfiller<void>> revoker;
+  };
+
+  struct Proc : public test::Procedure::Server {
+    int& callCount;
+    kj::Promise<void> blocker;
+
+    Proc(int& callCount, kj::Promise<void>&& blocker) : callCount(callCount), blocker(kj::mv(blocker)) {}
+
+    kj::Promise<void> call(CallContext context) override {
+      return blocker.then([&callCount = this->callCount]() {
+        ++callCount;
+      });
+    }
+  };
+
+  auto loop = kj::EventLoop();
+  auto waitScope = kj::WaitScope(loop);
+
+  auto callCount = 0;
+  auto promiseAndFulfiller = kj::newPromiseAndFulfiller<void>();
+  auto policy = kj::refcounted<RevocablePolicy>();
+  test::Procedure::Client proc = kj::heap<Proc>(callCount, kj::mv(promiseAndFulfiller.promise));
+  test::Procedure::Client membraned = capnp::membrane(proc, policy->addRef());
+
+  auto promise = membraned.callRequest().send();
+  KJ_ASSERT(!promise.poll(waitScope));
+  KJ_ASSERT(!callCount);
+
+  promiseAndFulfiller.fulfiller->fulfill();
+  KJ_ASSERT(!callCount);
+
+  policy->revoke();
+
+  KJ_ASSERT(promise.poll(waitScope));
+  KJ_ASSERT(!callCount); // Expected request to be cancelled.
+}
+
 }  // namespace
 }  // namespace _
 }  // namespace capnp

@@ -992,3 +992,7 @@ struct TestNameAnnotation $Cxx.name("RenamedStruct") {
 interface TestNameAnnotationInterface $Cxx.name("RenamedInterface") {
   badlyNamedMethod @0 (badlyNamedParam :UInt8 $Cxx.name("renamedParam")) $Cxx.name("renamedMethod");
 }
+
+interface Procedure {
+  call @0 ();
+}
