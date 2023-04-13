@@ -98,8 +98,8 @@ protected:
 class MembranePolicyImpl: public MembranePolicy, public kj::Refcounted {
 public:
   MembranePolicyImpl() = default;
-  MembranePolicyImpl(kj::Maybe<kj::Promise<void>> revokePromise)
-      : revokePromise(revokePromise.map([](kj::Promise<void>& p) { return p.fork(); })) {}
+  MembranePolicyImpl(kj::Maybe<kj::Promise<void>> revokePromise, kj::Maybe<kj::Canceler&> canceler = nullptr)
+      : revokePromise(revokePromise.map([](kj::Promise<void>& p) { return p.fork(); })), canceler(canceler) {}
 
   kj::Maybe<Capability::Client> inboundCall(uint64_t interfaceId, uint16_t methodId,
                                             Capability::Client target) override {
@@ -129,8 +129,31 @@ public:
     });
   }
 
+  bool isRevoked() const override {
+    return revoked;
+  }
+
+  kj::Maybe<kj::Canceler&> getCanceler() override {
+    KJ_REQUIRE(!revoked, "Expected policy to not be revoked.");
+    return canceler;
+  }
+
+  kj::Exception getRevocationReason() const override {
+    KJ_REQUIRE(revoked, "Expected policy to be revoked.");
+    return KJ_EXCEPTION(DISCONNECTED, "foobar");
+  }
+
+  void setRevoked(bool state) {
+    revoked = state;
+    KJ_IF_MAYBE(c, canceler) {
+      c->cancel(KJ_EXCEPTION(DISCONNECTED, "foobar"));
+    }
+  }
+
 private:
   kj::Maybe<kj::ForkedPromise<void>> revokePromise;
+  bool revoked = false;
+  kj::Maybe<kj::Canceler&> canceler;
 };
 
 void testThingImpl(kj::WaitScope& waitScope, test::TestMembrane::Client membraned,
@@ -308,16 +331,17 @@ struct TestRpcEnv {
   kj::WaitScope waitScope;
   kj::TwoWayPipe pipe;
   TwoPartyClient client;
+  kj::Own<MembranePolicyImpl> policy;
   TwoPartyClient server;
   test::TestMembrane::Client membraned;
 
-  TestRpcEnv(kj::Maybe<kj::Promise<void>> revokePromise = nullptr)
+  TestRpcEnv(kj::Maybe<kj::Promise<void>> revokePromise = nullptr, kj::Maybe<kj::Canceler&> canceler = nullptr)
       : waitScope(loop),
         pipe(kj::newTwoWayPipe()),
         client(*pipe.ends[0]),
+        policy(kj::refcounted<MembranePolicyImpl>(kj::mv(revokePromise), kj::mv(canceler))),
         server(*pipe.ends[1],
-               membrane(kj::heap<TestMembraneImpl>(),
-                        kj::refcounted<MembranePolicyImpl>(kj::mv(revokePromise))),
+               membrane(kj::heap<TestMembraneImpl>(), policy->addRef()),
                rpc::twoparty::Side::SERVER),
         membraned(client.bootstrap().castAs<test::TestMembrane>()) {}
 
@@ -377,7 +401,7 @@ KJ_TEST("call remote promise pointing into membrane that eventually resolves to 
   }, "outside", "outside", "outside", "outbound");
 }
 
-KJ_TEST("revoke membrane") {
+KJ_TEST("asynchronously revoke membrane") {
   auto paf = kj::newPromiseAndFulfiller<void>();
 
   TestRpcEnv env(kj::mv(paf.promise));
@@ -404,6 +428,42 @@ KJ_TEST("revoke membrane") {
 
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
       thing.passThroughRequest().send().ignoreResult().wait(env.waitScope));
+}
+
+KJ_TEST("synchronously revoke membrane") {
+  kj::Canceler canceler;
+  TestRpcEnv env(nullptr, canceler);
+
+  auto thing = env.membraned.makeThingRequest().send().wait(env.waitScope).getThing();
+
+  auto callPromise = env.membraned.waitForeverRequest().send();
+
+  KJ_EXPECT(!callPromise.poll(env.waitScope));
+
+  env.policy->setRevoked(true);
+
+  // TRICKY: We need to use .ignoreResult().wait() below because when compiling with
+  //   -fno-exceptions, void waits throw recoverable exceptions while non-void waits necessarily
+  //   throw fatal exceptions... but testing for fatal exceptions when exceptions are disabled
+  //   involves fork()ing the process to run the code so if it has side effects on file descriptors
+  //   then we'll get in a bad state...
+
+  KJ_ASSERT(callPromise.poll(env.waitScope));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar", callPromise.ignoreResult().wait(env.waitScope));
+
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
+                                      env.membraned.makeThingRequest().send().ignoreResult().wait(env.waitScope));
+
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
+                                      thing.passThroughRequest().send().ignoreResult().wait(env.waitScope));
+
+  env.policy->setRevoked(false);
+
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
+                                      env.membraned.makeThingRequest().send().ignoreResult().wait(env.waitScope));
+
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
+                                      thing.passThroughRequest().send().ignoreResult().wait(env.waitScope));
 }
 
 }  // namespace

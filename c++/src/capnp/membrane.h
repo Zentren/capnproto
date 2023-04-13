@@ -48,6 +48,8 @@
 // Mark Miller on membranes: http://www.eros-os.org/pipermail/e-lang/2003-January/008434.html
 
 #include "capability.h"
+#include "kj/one-of.h"
+#include "kj/debug.h"
 
 CAPNP_BEGIN_HEADER
 
@@ -183,6 +185,51 @@ public:
   // capability passed into the membrane and then back out.
   //
   // The default implementation simply returns `external`.
+
+  virtual bool isRevoked() const { return false; }
+  virtual kj::Maybe<kj::Canceler&> getCanceler() { return nullptr; }
+  virtual kj::Exception getRevocationReason() const { KJ_FAIL_REQUIRE("Not implemented."); }
+
+//  class State {
+//  private:
+//    kj::OneOf<kj::Canceler*, kj::Exception> cancelerOrException;
+//    bool revoked = false;
+//
+//  public:
+//    State() = default;
+//    State(State&&) = default;
+//    State(const State&) = delete;
+//
+//    explicit State(kj::Canceler& canceler) : cancelerOrException(&canceler) {}
+//
+//    explicit State(kj::Exception&& revocationReason) : cancelerOrException(kj::mv(revocationReason)), revoked(true) {}
+//
+//    bool isRevoked() const { return revoked; }
+//
+//    kj::Maybe<kj::Canceler&> getCanceler() {
+//      return cancelerOrException.tryGet<kj::Canceler*>().map([](kj::Canceler* canceler) -> kj::Canceler& {
+//        return *canceler;
+//      });
+//    }
+//
+//    kj::Exception getRevocationReason() const { return cancelerOrException.get<kj::Exception>(); }
+//  };
+//
+//  virtual State getState() { return {}; }
+
+//  virtual kj::Maybe<kj::Canceler&> getCanceler() { return {}; }
+  // Returns a canceller that, if it exists, wraps promises returned by requests. The canceler
+  // can then be used to cancel all outstanding requests, e.g. during revocation.
+  //
+  // The existence or not of the canceller should match that of the revocation reason.
+
+//  virtual kj::Maybe<kj::Exception> getRevocationReason() { return {}; }
+  // Returns an exception indicating the reason for revocation, which will be returned to callers.
+  // If none exists, then it is safe to assume one of the following:
+  // - The policy has not been revoked.
+  // - Synchronous revocation is not in use.
+  //
+  // The existence or not of the revocation reason should match that of the canceler.
 };
 
 Capability::Client membrane(Capability::Client inner, kj::Own<MembranePolicy> policy);

@@ -193,7 +193,14 @@ public:
   }
 
   RemotePromise<AnyPointer> send() override {
+    if (policy->isRevoked()) {
+      return capnp::newBrokenRequest(policy->getRevocationReason(), {}).send();
+    }
     auto promise = inner->send();
+    KJ_IF_MAYBE(canceler, policy->getCanceler()) {
+      auto pipeline = promise.noop();
+      promise = RemotePromise<AnyPointer>(canceler->wrap(promise.dropPipeline()), kj::mv(pipeline));
+    }
 
     auto newPipeline = AnyPointer::Pipeline(kj::refcounted<MembranePipelineHook>(
         PipelineHook::from(kj::mv(promise)), policy->addRef(), reverse));
@@ -220,9 +227,13 @@ public:
   }
 
   kj::Promise<void> sendStreaming() override {
+    if (policy->isRevoked()) {
+      return policy->getRevocationReason();
+    }
     auto promise = inner->sendStreaming();
-
-    KJ_IF_MAYBE(r, policy->onRevoked()) {
+    KJ_IF_MAYBE(canceler, policy->getCanceler()) {
+      promise = canceler->wrap(kj::mv(promise));
+    } else KJ_IF_MAYBE(r, policy->onRevoked()) {
       promise = promise.exclusiveJoin(r->then([]() {
         KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
       }));
@@ -328,7 +339,9 @@ class MembraneHook final: public ClientHook, public kj::Refcounted {
 public:
   MembraneHook(kj::Own<ClientHook>&& inner, kj::Own<MembranePolicy>&& policyParam, bool reverse)
       : inner(kj::mv(inner)), policy(kj::mv(policyParam)), reverse(reverse) {
-    KJ_IF_MAYBE(r, policy->onRevoked()) {
+    if (policy->isRevoked()) {
+      this->inner = newBrokenCap(policy->getRevocationReason());
+    } else KJ_IF_MAYBE(r, policy->onRevoked()) {
       revocationTask = r->eagerlyEvaluate([this](kj::Exception&& exception) {
         this->inner = newBrokenCap(kj::mv(exception));
       });
@@ -432,7 +445,11 @@ public:
       auto result = inner->call(interfaceId, methodId,
           kj::refcounted<MembraneCallContextHook>(kj::mv(context), policy->addRef(), !reverse));
 
-      KJ_IF_MAYBE(r, policy->onRevoked()) {
+      if (policy->isRevoked()) {
+        result.promise = policy->getRevocationReason();
+      } else KJ_IF_MAYBE(canceler, policy->getCanceler()) {
+        result.promise = canceler->wrap(kj::mv(result.promise));
+      } else KJ_IF_MAYBE(r, policy->onRevoked()) {
         result.promise = result.promise.exclusiveJoin(kj::mv(*r));
       }
 
@@ -464,7 +481,11 @@ public:
     }
 
     KJ_IF_MAYBE(promise, inner->whenMoreResolved()) {
-      KJ_IF_MAYBE(r, policy->onRevoked()) {
+      if (policy->isRevoked()) {
+        *promise = policy->getRevocationReason();
+      } else KJ_IF_MAYBE(canceler, policy->getCanceler()) {
+        *promise = canceler->wrap(kj::mv(*promise));
+      } else KJ_IF_MAYBE(r, policy->onRevoked()) {
         *promise = promise->exclusiveJoin(r->then([]() -> kj::Own<ClientHook> {
           KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
         }));
