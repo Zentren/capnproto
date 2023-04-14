@@ -199,9 +199,10 @@ public:
         PipelineHook::from(kj::mv(promise)), policy->addRef(), reverse));
 
     auto onRevoked = policy->onRevoked();
+    auto canceler = policy->getCanceler();
 
     bool reverse = this->reverse;  // for capture
-    auto newPromise = promise.then(kj::mvCapture(policy->addRef(),
+    auto newPromise = promise.then(kj::mvCapture(policy,
         [reverse](kj::Own<MembranePolicy>&& policy, Response<AnyPointer>&& response) {
       AnyPointer::Reader reader = response;
       auto newRespHook = kj::heap<MembraneResponseHook>(
@@ -210,8 +211,8 @@ public:
       return Response<AnyPointer>(reader, kj::mv(newRespHook));
     }));
 
-    KJ_IF_MAYBE(canceler, policy->getCanceler()) {
-      newPromise = canceler->wrap(kj::mv(newPromise));
+    KJ_IF_MAYBE(c, canceler) {
+      newPromise = c->wrap(kj::mv(newPromise));
     }
 
     return RemotePromise<AnyPointer>(kj::mv(newPromise), kj::mv(newPipeline));
