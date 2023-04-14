@@ -186,9 +186,7 @@ public:
   //
   // The default implementation simply returns `external`.
 
-  virtual bool isRevoked() const { return false; }
   virtual kj::Maybe<kj::Canceler&> getCanceler() { return nullptr; }
-  virtual kj::Exception getRevocationReason() const { KJ_FAIL_REQUIRE("Not implemented."); }
 
 //  class State {
 //  private:
