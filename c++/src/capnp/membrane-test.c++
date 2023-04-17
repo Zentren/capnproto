@@ -99,7 +99,7 @@ class MembranePolicyImpl: public MembranePolicy, public kj::Refcounted {
 public:
   MembranePolicyImpl() = default;
   MembranePolicyImpl(kj::Maybe<kj::Promise<void>> revokePromise, kj::Maybe<kj::Canceler&> canceler = nullptr)
-      : revokePromise(revokePromise.map([](kj::Promise<void>& p) { return p.fork(); })), canceler(kj::mv(canceler)) {}
+      : revokePromise(revokePromise.map([](kj::Promise<void>& p) { return p.fork(); })), canceler(kj::mv(canceler)), revocationSubject(kj::refcounted<RevocationSubject>()) {}
 
   kj::Maybe<Capability::Client> inboundCall(uint64_t interfaceId, uint16_t methodId,
                                             Capability::Client target) override {
@@ -129,22 +129,41 @@ public:
     });
   }
 
+  kj::Maybe<RevocationObserver> onRevoked(kj::Function<void(const kj::Exception&)>&& callback) override {
+    return RevocationObserver(revocationSubject->addRef(), kj::mv(callback));
+  }
+
   kj::Maybe<kj::Canceler&> getCanceler() override {
-    KJ_REQUIRE(!revoked, "Expected policy to not be revoked.");
+    if (revoked) {
+      KJ_LOG(INFO, "Bad, we don't want this.");
+    }
     return canceler;
   }
 
-  void setRevoked(bool state) {
-    revoked = state;
+  void revoke() {
+    if (revoked) {
+      return;
+    }
+    revoked = true;
     KJ_IF_MAYBE(c, canceler) {
       c->cancel(KJ_EXCEPTION(DISCONNECTED, "foobar"));
     }
+    revocationSubject->revoke(KJ_EXCEPTION(DISCONNECTED, "foobar"));
+  }
+
+  void reset() {
+    if (!revoked) {
+      return;
+    }
+    revoked = false;
+    revocationSubject = kj::refcounted<RevocationSubject>();
   }
 
 private:
   kj::Maybe<kj::ForkedPromise<void>> revokePromise;
   bool revoked = false;
   kj::Maybe<kj::Canceler&> canceler;
+  kj::Own<RevocationSubject> revocationSubject;
 };
 
 void testThingImpl(kj::WaitScope& waitScope, test::TestMembrane::Client membraned,
@@ -404,8 +423,8 @@ KJ_TEST("asynchronously revoke membrane") {
 
   KJ_EXPECT(!callPromise.poll(env.waitScope));
 
-    paf.fulfiller->reject(KJ_EXCEPTION(DISCONNECTED, "foobar"));
-    env.policy->setRevoked(true);
+  paf.fulfiller->reject(KJ_EXCEPTION(DISCONNECTED, "foobar"));
+  canceler.cancel(KJ_EXCEPTION(DISCONNECTED, "foobar"));
 
   // TRICKY: We need to use .ignoreResult().wait() below because when compiling with
   //   -fno-exceptions, void waits throw recoverable exceptions while non-void waits necessarily
@@ -424,10 +443,9 @@ KJ_TEST("asynchronously revoke membrane") {
 }
 
 KJ_TEST("synchronously revoke membrane") {
-  auto paf = kj::newPromiseAndFulfiller<void>();
   kj::Canceler canceler;
 
-  TestRpcEnv env(kj::mv(paf.promise), canceler);
+  TestRpcEnv env(nullptr, canceler);
 
   auto thing = env.membraned.makeThingRequest().send().wait(env.waitScope).getThing();
 
@@ -435,8 +453,7 @@ KJ_TEST("synchronously revoke membrane") {
 
   KJ_EXPECT(!callPromise.poll(env.waitScope));
 
-  paf.fulfiller->reject(KJ_EXCEPTION(DISCONNECTED, "foobar"));
-  env.policy->setRevoked(true);
+  env.policy->revoke();
 
   // TRICKY: We need to use .ignoreResult().wait() below because when compiling with
   //   -fno-exceptions, void waits throw recoverable exceptions while non-void waits necessarily
@@ -447,6 +464,12 @@ KJ_TEST("synchronously revoke membrane") {
   KJ_ASSERT(callPromise.poll(env.waitScope));
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar", callPromise.ignoreResult().wait(env.waitScope));
 
+  callPromise = env.membraned.waitForeverRequest().send();
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
+                                      env.membraned.waitForeverRequest().send().ignoreResult().wait(env.waitScope));
+
+  KJ_ASSERT(callPromise.poll(env.waitScope));
+  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar", callPromise.ignoreResult().wait(env.waitScope));
 //  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
 //                                      env.membraned.makeThingRequest().send().ignoreResult().wait(env.waitScope));
 //
