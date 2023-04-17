@@ -91,6 +91,8 @@ public:
       : kj::ScopedObserver<kj::Exception>(kj::mv(subject)), callback(kj::fwd<Func>(callback)) {
   }
 
+  RevocationObserver(RevocationObserver&& other) noexcept(false) : kj::ScopedObserver<kj::Exception>(kj::mv(other)), callback(kj::mv(other.callback)) {}
+
   void update(const kj::Exception& e) override {
     callback(e);
   }

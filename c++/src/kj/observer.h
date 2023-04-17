@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "debug.h"
 #include "map.h"
 #include "memory.h"
 
@@ -33,7 +34,7 @@ public:
   }
 
   template <typename U = T, typename = EnableIf<!isSameType<U, void>()>>
-  void notifyObservers(const T& event) {
+  void notifyObservers(const U& event) {
     for (auto observer: observers) {
       observer->update(event);
     }
@@ -45,7 +46,7 @@ public:
 
   void removeObserver(Observer<T>& observer) {
     auto ptr = &observer;
-    observers.erase(ptr);
+    observers.eraseMatch(ptr);
   }
 
   virtual ~Subject() noexcept(false) {}
@@ -60,26 +61,36 @@ using VoidSubject = Subject<void>;
 template <class T>
 class ScopedObserver : public Observer<T> {
 public:
-  explicit ScopedObserver(Own<Subject<T>>&& subject) : subject(mv(subject)) {
+  explicit ScopedObserver(Own<Subject<T>>&& subject) {
     subject->addObserver(*this);
+    this->subject = kj::mv(subject);
   }
 
   ScopedObserver(ScopedObserver&& other) noexcept(false) : subject(mv(other.subject)) {
-    subject->removeObserver(other);
-    subject->addObserver(*this);
+    KJ_IF_MAYBE(s, subject) {
+      s->get()->removeObserver(other);
+      s->get()->addObserver(*this);
+    } else {
+      KJ_FAIL_REQUIRE("Missing subject.");
+    }
   }
 
   ~ScopedObserver() noexcept(false) {
-    subject->removeObserver(*this);
+    KJ_IF_MAYBE(s, subject) {
+      s->get()->removeObserver(*this);
+    }
   }
 
 protected:
   Subject<T>& getSubject() {
-    return *subject;
+    KJ_IF_MAYBE(s, subject) {
+      return **s;
+    }
+    KJ_FAIL_REQUIRE("Missing subject.");
   }
 
 private:
-  Own<Subject<T>> subject;
+  kj::Maybe<Own<Subject<T>>> subject;
 };
 
 }

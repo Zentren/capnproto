@@ -20,6 +20,7 @@ set(kj_sources_lite
   test-helpers.c++
   units.c++
   encoding.c++
+  observer.c++
 )
 set(kj_sources_heavy
   refcount.c++
@@ -66,6 +67,7 @@ set(kj_headers
   main.h
   win32-api-version.h
   windows-sanity.h
+  observer.h
 )
 set(kj-parse_headers
   parse/common.h

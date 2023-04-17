@@ -325,7 +325,6 @@ public:
       : inner(kj::mv(inner)), policy(kj::mv(policyParam)), reverse(reverse) {
     revocationObserver = policy->onRevoked([this](const kj::Exception& reason) {
       this->inner = newBrokenCap(kj::Exception(reason));
-      revocationObserver = nullptr;
     });
     KJ_IF_MAYBE(observer, revocationObserver) {
       KJ_IF_MAYBE(reason, observer->getException()) {
