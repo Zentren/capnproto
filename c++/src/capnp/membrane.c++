@@ -335,13 +335,16 @@ class MembraneHook final: public ClientHook, public kj::Refcounted {
 public:
   MembraneHook(kj::Own<ClientHook>&& inner, kj::Own<MembranePolicy>&& policyParam, bool reverse)
       : inner(kj::mv(inner)), policy(kj::mv(policyParam)), reverse(reverse) {
-    revocationObserver = policy->onRevoked([this](const kj::Exception& reason) {
-      this->inner = newBrokenCap(kj::Exception(reason));
-    });
-    KJ_IF_MAYBE(observer, revocationObserver) {
-      KJ_IF_MAYBE(reason, observer->getException()) {
-        this->inner = newBrokenCap(kj::Exception(*reason));
-      }
+    KJ_IF_MAYBE(r, policy->onRevoked()) {
+      revocationTask = r->eagerlyEvaluate([this](kj::Exception&& exception) {
+        this->inner = newBrokenCap(kj::mv(exception));
+      });
+    }
+    KJ_IF_MAYBE(canceler, policy->getCanceler()) {
+      revocationTask = canceler->wrap(kj::mv(revocationTask))
+          .catch_([this](kj::Exception&& exception) {
+            this->inner = newBrokenCap(kj::mv(exception));
+          });
     }
   }
 
@@ -522,7 +525,6 @@ private:
   bool reverse;
   kj::Maybe<kj::Own<ClientHook>> resolved;
   kj::Promise<void> revocationTask = nullptr;
-  kj::Maybe<RevocationObserver> revocationObserver;
 };
 
 kj::Own<ClientHook> membrane(kj::Own<ClientHook> inner, MembranePolicy& policy, bool reverse) {
