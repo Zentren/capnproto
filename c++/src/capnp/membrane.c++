@@ -198,6 +198,7 @@ public:
     auto newPipeline = AnyPointer::Pipeline(kj::refcounted<MembranePipelineHook>(
         PipelineHook::from(kj::mv(promise)), policy->addRef(), reverse));
 
+    auto onRevoked = policy->onRevoked();
     auto canceler = policy->getCanceler();
 
     bool reverse = this->reverse;  // for capture
@@ -210,6 +211,11 @@ public:
       return Response<AnyPointer>(reader, kj::mv(newRespHook));
     }));
 
+    KJ_IF_MAYBE(r, kj::mv(onRevoked)) {
+      newPromise = newPromise.exclusiveJoin(r->then([]() -> Response<AnyPointer> {
+        KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
+      }));
+    }
     KJ_IF_MAYBE(c, canceler) {
       newPromise = c->wrap(kj::mv(newPromise));
     }
@@ -219,6 +225,12 @@ public:
 
   kj::Promise<void> sendStreaming() override {
     auto promise = inner->sendStreaming();
+
+    KJ_IF_MAYBE(r, policy->onRevoked()) {
+      promise = promise.exclusiveJoin(r->then([]() {
+        KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
+      }));
+    }
     KJ_IF_MAYBE(canceler, policy->getCanceler()) {
       promise = canceler->wrap(kj::mv(promise));
     }
@@ -430,6 +442,9 @@ public:
       auto result = inner->call(interfaceId, methodId,
           kj::refcounted<MembraneCallContextHook>(kj::mv(context), policy->addRef(), !reverse));
 
+      KJ_IF_MAYBE(r, policy->onRevoked()) {
+        result.promise = result.promise.exclusiveJoin(kj::mv(*r));
+      }
       KJ_IF_MAYBE(canceler, policy->getCanceler()) {
         result.promise = canceler->wrap(kj::mv(result.promise));
       }
@@ -462,6 +477,11 @@ public:
     }
 
     KJ_IF_MAYBE(promise, inner->whenMoreResolved()) {
+      KJ_IF_MAYBE(r, policy->onRevoked()) {
+        *promise = promise->exclusiveJoin(r->then([]() -> kj::Own<ClientHook> {
+          KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
+        }));
+      }
       KJ_IF_MAYBE(canceler, policy->getCanceler()) {
         *promise = canceler->wrap(kj::mv(*promise));
       }
@@ -501,6 +521,7 @@ private:
   kj::Own<MembranePolicy> policy;
   bool reverse;
   kj::Maybe<kj::Own<ClientHook>> resolved;
+  kj::Promise<void> revocationTask = nullptr;
   kj::Maybe<RevocationObserver> revocationObserver;
 };
 
