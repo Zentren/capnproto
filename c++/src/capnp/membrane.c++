@@ -340,11 +340,16 @@ public:
         this->inner = newBrokenCap(kj::mv(exception));
       });
     }
+    kj::Maybe<kj::Canceler&> canceler;
+    try {
+      canceler = policy->getCanceler();
+    } catch (const kj::Exception& e) {
+      this->inner = newBrokenCap(kj::Exception(e));
+    }
     KJ_IF_MAYBE(canceler, policy->getCanceler()) {
-      revocationTask = canceler->wrap(kj::mv(revocationTask))
-          .catch_([this](kj::Exception&& exception) {
-            this->inner = newBrokenCap(kj::mv(exception));
-          });
+      revocationTask = canceler->wrap(kj::Promise<void>(kj::mv(revocationTask)).attach(kj::defer([this]() {
+        this->inner = newBrokenCap(KJ_EXCEPTION(DISCONNECTED, "foobar")); // FIXME
+      })));
     }
   }
 

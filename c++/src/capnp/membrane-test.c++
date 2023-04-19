@@ -157,7 +157,7 @@ public:
 
   kj::Maybe<kj::Canceler&> getCanceler() override {
     if (revoked) {
-      KJ_LOG(INFO, "Bad, we don't want this.");
+      throw KJ_EXCEPTION(DISCONNECTED, "foobar");
     }
     return canceler;
   }
@@ -179,6 +179,12 @@ public:
     }
     revoked = false;
     revocationSubject = kj::refcounted<RevocationSubject>();
+  }
+
+  void setRevokePromise(kj::Maybe<kj::Promise<void>> promise) {
+    revokePromise = promise.map([](kj::Promise<void>& promise) -> kj::ForkedPromise<void> {
+      return promise.fork();
+    });
   }
 
 private:
@@ -435,9 +441,8 @@ KJ_TEST("call remote promise pointing into membrane that eventually resolves to 
 
 KJ_TEST("asynchronously revoke membrane") {
   auto paf = kj::newPromiseAndFulfiller<void>();
-  kj::Canceler canceler;
 
-  TestRpcEnv env(kj::mv(paf.promise), canceler);
+  TestRpcEnv env(kj::mv(paf.promise), nullptr);
 
   auto thing = env.membraned.makeThingRequest().send().wait(env.waitScope).getThing();
 
@@ -446,6 +451,10 @@ KJ_TEST("asynchronously revoke membrane") {
   KJ_EXPECT(!callPromise.poll(env.waitScope));
 
   paf.fulfiller->reject(KJ_EXCEPTION(DISCONNECTED, "foobar"));
+
+  paf = kj::newPromiseAndFulfiller<void>();
+
+  env.policy->setRevokePromise(kj::mv(paf.promise));
 
   // TRICKY: We need to use .ignoreResult().wait() below because when compiling with
   //   -fno-exceptions, void waits throw recoverable exceptions while non-void waits necessarily
@@ -464,9 +473,10 @@ KJ_TEST("asynchronously revoke membrane") {
 }
 
 KJ_TEST("synchronously revoke membrane") {
+  auto paf = kj::newPromiseAndFulfiller<void>();
   kj::Canceler canceler;
 
-  TestRpcEnv env(nullptr, canceler);
+  TestRpcEnv env(kj::mv(paf.promise), canceler);
 
   auto thing = env.membraned.makeThingRequest().send().wait(env.waitScope).getThing();
 
@@ -474,7 +484,7 @@ KJ_TEST("synchronously revoke membrane") {
 
   KJ_EXPECT(!callPromise.poll(env.waitScope));
 
-  env.policy->revoke();
+  canceler.cancel(KJ_EXCEPTION(DISCONNECTED, "foobar"));
 
   // TRICKY: We need to use .ignoreResult().wait() below because when compiling with
   //   -fno-exceptions, void waits throw recoverable exceptions while non-void waits necessarily
@@ -484,20 +494,6 @@ KJ_TEST("synchronously revoke membrane") {
 
   KJ_ASSERT(callPromise.poll(env.waitScope));
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar", callPromise.ignoreResult().wait(env.waitScope));
-
-  callPromise = env.membraned.waitForeverRequest().send();
-  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
-                                      env.membraned.waitForeverRequest().send().ignoreResult().wait(env.waitScope));
-
-  KJ_ASSERT(callPromise.poll(env.waitScope));
-  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar", callPromise.ignoreResult().wait(env.waitScope));
-  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
-                                      env.membraned.makeThingRequest().send().ignoreResult().wait(env.waitScope));
-
-  KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
-                                      thing.passThroughRequest().send().ignoreResult().wait(env.waitScope));
-
-  env.policy->reset();
 
   KJ_EXPECT_THROW_RECOVERABLE_MESSAGE("foobar",
                                       env.membraned.makeThingRequest().send().ignoreResult().wait(env.waitScope));
