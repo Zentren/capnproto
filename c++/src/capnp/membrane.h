@@ -56,59 +56,6 @@ CAPNP_BEGIN_HEADER
 
 namespace capnp {
 
-class RevocationSubject : public kj::Subject<kj::Exception>, public kj::Refcounted {
-public:
-  void revoke(kj::Exception&& e) {
-    if (revoked) {
-      return;
-    }
-    revoked = true;
-    revocationException = e;
-    notifyObservers(kj::mv(e));
-  }
-
-  bool isRevoked() const {
-    return revoked;
-  }
-
-  kj::Maybe<kj::Exception> getException() const {
-    return revocationException;
-  }
-
-  kj::Own<RevocationSubject> addRef() {
-    return kj::addRef(*this);
-  }
-
-private:
-  bool revoked = false;
-  kj::Maybe<kj::Exception> revocationException = nullptr;
-};
-
-class RevocationObserver : public kj::ScopedObserver<kj::Exception> {
-public:
-  template <class Func>
-  explicit RevocationObserver(kj::Own<RevocationSubject>&& subject, Func&& callback)
-      : kj::ScopedObserver<kj::Exception>(kj::mv(subject)), callback(kj::fwd<Func>(callback)) {
-  }
-
-  RevocationObserver(RevocationObserver&& other) noexcept(false) : kj::ScopedObserver<kj::Exception>(kj::mv(other)), callback(kj::mv(other.callback)) {}
-
-  void update(const kj::Exception& e) override {
-    callback(e);
-  }
-
-  bool isRevoked() {
-    return kj::downcast<RevocationSubject>(getSubject()).isRevoked();
-  }
-
-  kj::Maybe<kj::Exception> getException() {
-    return kj::downcast<RevocationSubject>(getSubject()).getException();
-  }
-
-private:
-  kj::Function<void(const kj::Exception&)> callback;
-};
-
 class MembranePolicy {
   // Applications may implement this interface to define a membrane policy, which allows some
   // calls crossing the membrane to be blocked or redirected.
@@ -239,8 +186,6 @@ public:
   // capability passed into the membrane and then back out.
   //
   // The default implementation simply returns `external`.
-
-  virtual kj::Maybe<capnp::RevocationObserver> onRevoked(kj::Function<void(const kj::Exception&)>&& callback) { return {}; }
 
   virtual kj::Maybe<kj::Canceler&> getCanceler() { return nullptr; }
 };

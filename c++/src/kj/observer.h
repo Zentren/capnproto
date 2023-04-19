@@ -2,95 +2,117 @@
 
 #include "common.h"
 #include "debug.h"
+#include "function.h"
 #include "map.h"
 #include "memory.h"
+#include "refcount.h"
 
 KJ_BEGIN_HEADER
 
 namespace kj {
 
-template <typename T>
-class Observer {
-public:
-  virtual void update(const T& value) = 0;
-  virtual ~Observer() noexcept(false) {}
-};
+class Subscription;
 
-template <>
-class Observer<void> {
+namespace _ {  // private
+class SubjectBase {
+  friend class ::kj::Subscription;
+protected:
+  virtual void unsubscribe(uint id) = 0;
+  virtual ~SubjectBase() noexcept(false) {}
+};
+}
+
+class Subscription {
+  template <typename>
+  friend class Subject;
+
 public:
-  virtual void update() = 0;
-  virtual ~Observer() noexcept(false) {}
+  Subscription() {}
+  Subscription(Subscription&&) = default;
+
+  void unsubscribe() {
+    KJ_IF_MAYBE(subjectAndId, subjectAndIdMaybe) {
+      subjectAndId->subject->unsubscribe(subjectAndId->id);
+    }
+  }
+
+  bool isSubscribed() const {
+    KJ_IF_MAYBE(subjectAndId, subjectAndIdMaybe) {
+      return true;
+    }
+    return false;
+  }
+
+  ~Subscription() {
+    unsubscribe();
+  }
+
+private:
+  struct SubjectAndId {
+    Own<_::SubjectBase> subject;
+    uint id;
+  };
+
+  Maybe<SubjectAndId> subjectAndIdMaybe;
+
+  Subscription(Own<_::SubjectBase>&& subject, uint id) : subjectAndIdMaybe({mv(subject), id}) {}
 };
 
 template <typename T = void>
-class Subject {
+class Subject : public _::SubjectBase, public Refcounted {
+  friend class Subscription;
 public:
   template <typename U = T, typename = EnableIf<isSameType<U, void>()>>
-  void notifyObservers() {
-    for (auto observer: observers) {
-      observer->update();
+  void notify() {
+    deferUnsubscribes = true;
+    KJ_DEFER(deferUnsubscribes = false);
+    for (auto& observer : observers) {
+      observer();
     }
+    processDeferredUnsubscribes();
   }
 
   template <typename U = T, typename = EnableIf<!isSameType<U, void>()>>
-  void notifyObservers(const U& event) {
-    for (auto observer: observers) {
-      observer->update(event);
+  void notify(const U& event) {
+    deferUnsubscribes = true;
+    KJ_DEFER(deferUnsubscribes = false);
+    for (auto& entry : observers) {
+      entry.value(event);
     }
+    processDeferredUnsubscribes();
   }
 
-  void addObserver(Observer<T>& observer) {
-    observers.insert(&observer);
+  template <typename Func>
+  Subscription subscribe(Func&& observer) {
+    auto id = nextId++;
+    observers.insert(id, Function<void(T)>(mv(observer)));
+    return {addRef(), id};
   }
 
-  void removeObserver(Observer<T>& observer) {
-    auto ptr = &observer;
-    observers.eraseMatch(ptr);
+  Own<SubjectBase> addRef() {
+    return addRef(*this);
   }
-
-  virtual ~Subject() noexcept(false) {}
 
 private:
-  HashSet<Observer<T>*> observers;
-};
+  uint nextId{0};
+  HashMap<uint, Function<void(T)>> observers;
+  bool deferUnsubscribes{false};
+  Vector<uint> deferredUnsubscribes;
 
-using VoidObserver = Observer<void>;
-using VoidSubject = Subject<void>;
-
-template <class T>
-class ScopedObserver : public Observer<T> {
-public:
-  explicit ScopedObserver(Own<Subject<T>>&& subject) {
-    subject->addObserver(*this);
-    this->subject = kj::mv(subject);
-  }
-
-  ScopedObserver(ScopedObserver&& other) noexcept(false) : subject(mv(other.subject)) {
-    KJ_IF_MAYBE(s, subject) {
-      s->get()->removeObserver(other);
-      s->get()->addObserver(*this);
+  void unsubscribe(uint id) override {
+    if (deferUnsubscribes) {
+      deferredUnsubscribes.add(id);
     } else {
-      KJ_FAIL_REQUIRE("Missing subject.");
+      observers.erase(id);
     }
   }
 
-  ~ScopedObserver() noexcept(false) {
-    KJ_IF_MAYBE(s, subject) {
-      s->get()->removeObserver(*this);
+  void processDeferredUnsubscribes() {
+    for (auto id : deferredUnsubscribes) {
+      unsubscribe(id);
     }
+    deferredUnsubscribes.clear();
   }
-
-protected:
-  Subject<T>& getSubject() {
-    KJ_IF_MAYBE(s, subject) {
-      return **s;
-    }
-    KJ_FAIL_REQUIRE("Missing subject.");
-  }
-
-private:
-  kj::Maybe<Own<Subject<T>>> subject;
 };
 
 }

@@ -21,6 +21,7 @@
 
 #include "membrane.h"
 #include <kj/debug.h>
+#include <kj/observer.h>
 
 namespace capnp {
 
@@ -231,8 +232,8 @@ public:
         KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
       }));
     }
-    KJ_IF_MAYBE(canceler, policy->getCanceler()) {
-      promise = canceler->wrap(kj::mv(promise));
+    KJ_IF_MAYBE(c, policy->getCanceler()) {
+      promise = c->wrap(kj::mv(promise));
     }
 
     return promise;
@@ -346,10 +347,10 @@ public:
     } catch (const kj::Exception& e) {
       this->inner = newBrokenCap(kj::Exception(e));
     }
-    KJ_IF_MAYBE(canceler, policy->getCanceler()) {
-      revocationTask = canceler->wrap(kj::Promise<void>(kj::mv(revocationTask)).attach(kj::defer([this]() {
-        this->inner = newBrokenCap(KJ_EXCEPTION(DISCONNECTED, "foobar")); // FIXME
-      })));
+    KJ_IF_MAYBE(c, canceler) {
+      cancellationSubscription.emplace(c->onCanceled([this](kj::Exception e) {
+        this->inner = newBrokenCap(kj::mv(e));
+      }));
     }
   }
 
@@ -453,8 +454,8 @@ public:
       KJ_IF_MAYBE(r, policy->onRevoked()) {
         result.promise = result.promise.exclusiveJoin(kj::mv(*r));
       }
-      KJ_IF_MAYBE(canceler, policy->getCanceler()) {
-        result.promise = canceler->wrap(kj::mv(result.promise));
+      KJ_IF_MAYBE(c, policy->getCanceler()) {
+        result.promise = c->wrap(kj::mv(result.promise));
       }
 
       return {
@@ -490,8 +491,8 @@ public:
           KJ_FAIL_REQUIRE("onRevoked() promise resolved; it should only reject");
         }));
       }
-      KJ_IF_MAYBE(canceler, policy->getCanceler()) {
-        *promise = canceler->wrap(kj::mv(*promise));
+      KJ_IF_MAYBE(c, policy->getCanceler()) {
+        *promise = c->wrap(kj::mv(*promise));
       }
 
       return promise->then([this](kj::Own<ClientHook>&& newInner) {
@@ -530,6 +531,7 @@ private:
   bool reverse;
   kj::Maybe<kj::Own<ClientHook>> resolved;
   kj::Promise<void> revocationTask = nullptr;
+  kj::Maybe<kj::Subscription> cancellationSubscription;
 };
 
 kj::Own<ClientHook> membrane(kj::Own<ClientHook> inner, MembranePolicy& policy, bool reverse) {

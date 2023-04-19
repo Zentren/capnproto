@@ -151,10 +151,6 @@ public:
     });
   }
 
-  kj::Maybe<RevocationObserver> onRevoked(kj::Function<void(const kj::Exception&)>&& callback) override {
-    return RevocationObserver(revocationSubject->addRef(), kj::mv(callback));
-  }
-
   kj::Maybe<kj::Canceler&> getCanceler() override {
     if (revoked) {
       throw KJ_EXCEPTION(DISCONNECTED, "foobar");
@@ -170,7 +166,6 @@ public:
     KJ_IF_MAYBE(c, canceler) {
       c->cancel(KJ_EXCEPTION(DISCONNECTED, "foobar"));
     }
-    revocationSubject->revoke(KJ_EXCEPTION(DISCONNECTED, "foobar"));
   }
 
   void reset() {
@@ -178,7 +173,6 @@ public:
       return;
     }
     revoked = false;
-    revocationSubject = kj::refcounted<RevocationSubject>();
   }
 
   void setRevokePromise(kj::Maybe<kj::Promise<void>> promise) {
@@ -191,7 +185,6 @@ private:
   kj::Maybe<kj::ForkedPromise<void>> revokePromise;
   bool revoked = false;
   kj::Maybe<kj::Canceler&> canceler;
-  kj::Own<RevocationSubject> revocationSubject = kj::refcounted<RevocationSubject>();
 };
 
 void testThingImpl(kj::WaitScope& waitScope, test::TestMembrane::Client membraned,

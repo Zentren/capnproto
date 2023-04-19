@@ -23,6 +23,7 @@
 
 #include "async-prelude.h"
 #include <kj/exception.h>
+#include <kj/observer.h>
 #include <kj/refcount.h>
 
 KJ_BEGIN_HEADER
@@ -753,7 +754,7 @@ class Canceler: private AsyncObject {
   // might cause segfaults. Thus, it is safer to use a Canceler.
 
 public:
-  inline Canceler() {}
+  inline Canceler() : cancellationSubject(kj::refcounted<kj::Subject<kj::Exception>>()) {}
   ~Canceler() noexcept(false);
   KJ_DISALLOW_COPY(Canceler);
 
@@ -775,6 +776,11 @@ public:
   bool isEmpty() const { return list == nullptr; }
   // Indicates if any previously-wrapped promises are still executing. (If this returns true, then
   // cancel() would be a no-op.)
+
+  template <typename Func>
+  kj::Subscription onCanceled(Func&& observer) {
+    return cancellationSubject->subscribe(kj::mv(observer));
+  }
 
 private:
   class AdapterBase {
@@ -815,6 +821,7 @@ private:
   };
 
   Maybe<AdapterBase&> list;
+  kj::Own<kj::Subject<kj::Exception>> cancellationSubject;
 };
 
 template <>
