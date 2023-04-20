@@ -754,7 +754,7 @@ class Canceler: private AsyncObject {
   // might cause segfaults. Thus, it is safer to use a Canceler.
 
 public:
-  inline Canceler() : cancellationSubject(kj::refcounted<kj::Subject<kj::Exception>>()) {}
+  inline Canceler() : cancellationSubject() {}
   ~Canceler() noexcept(false);
   KJ_DISALLOW_COPY(Canceler);
 
@@ -778,8 +778,8 @@ public:
   // cancel() would be a no-op.)
 
   template <typename Func>
-  kj::Subscription onCanceled(Func&& observer) {
-    return cancellationSubject->subscribe(kj::mv(observer));
+  Subscription onCanceled(Func&& observer) {
+    return cancellationSubject.subscribe(fwd<Func>(observer));
   }
 
 private:
@@ -821,7 +821,7 @@ private:
   };
 
   Maybe<AdapterBase&> list;
-  kj::Own<kj::Subject<kj::Exception>> cancellationSubject;
+  kj::Subject<kj::Exception> cancellationSubject;
 };
 
 template <>

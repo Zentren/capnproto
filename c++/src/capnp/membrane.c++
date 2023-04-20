@@ -348,9 +348,9 @@ public:
       this->inner = newBrokenCap(kj::Exception(e));
     }
     KJ_IF_MAYBE(c, canceler) {
-      cancellationSubscription.emplace(c->onCanceled([this](kj::Exception e) {
-        this->inner = newBrokenCap(kj::mv(e));
-      }));
+      cancellationSubscription = c->onCanceled([this](const kj::Exception& e) {
+        this->inner = newBrokenCap(kj::Exception(e));
+      });
     }
   }
 

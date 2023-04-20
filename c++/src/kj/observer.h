@@ -1,118 +1,87 @@
 #pragma once
 
 #include "common.h"
-#include "debug.h"
 #include "function.h"
-#include "map.h"
 #include "memory.h"
-#include "refcount.h"
 
 KJ_BEGIN_HEADER
 
 namespace kj {
 
-class Subscription;
+namespace _ {
 
-namespace _ {  // private
-class SubjectBase {
-  friend class ::kj::Subscription;
-protected:
-  virtual void unsubscribe(uint id) = 0;
-  virtual ~SubjectBase() noexcept(false) {}
+class SubscriptionBase {
+public:
+  virtual ~SubscriptionBase() = default;
 };
+
+class VoidSubjectBase {
+public:
+  virtual Own<SubscriptionBase> subscribe(Function<void()> &&callback) = 0;
+
+  virtual void notify() = 0;
+
+  virtual ~VoidSubjectBase() = default;
+};
+
+Own<VoidSubjectBase> newVoidSubjectBase();
+
+class ParameterSubjectBase {
+public:
+  virtual Own<SubscriptionBase> subscribe(Function<void(const void *event)> &&callback) = 0;
+
+  virtual void notify(const void *event) = 0;
+
+  virtual ~ParameterSubjectBase() = default;
+};
+
+Own<ParameterSubjectBase> newParameterSubjectBase();
+
 }
 
 class Subscription {
-  template <typename>
-  friend class Subject;
-
 public:
-  Subscription() {}
+  explicit Subscription(Own<_::SubscriptionBase>&& base);
   Subscription(Subscription&&) = default;
-
-  void unsubscribe() {
-    KJ_IF_MAYBE(subjectAndId, subjectAndIdMaybe) {
-      subjectAndId->subject->unsubscribe(subjectAndId->id);
-    }
-  }
-
-  bool isSubscribed() const {
-    KJ_IF_MAYBE(subjectAndId, subjectAndIdMaybe) {
-      return true;
-    }
-    return false;
-  }
-
-  ~Subscription() {
-    unsubscribe();
-  }
-
 private:
-  struct SubjectAndId {
-    Own<_::SubjectBase> subject;
-    uint id;
-  };
-
-  Maybe<SubjectAndId> subjectAndIdMaybe;
-
-  Subscription(Own<_::SubjectBase>&& subject, uint id) : subjectAndIdMaybe({mv(subject), id}) {}
+  Own<_::SubscriptionBase> base;
 };
 
-template <typename T = void>
-class Subject : public _::SubjectBase, public Refcounted {
-  friend class Subscription;
+template <typename T>
+class Subject
+{
 public:
-  template <typename U = T, typename = EnableIf<isSameType<U, void>()>>
-  void notify() {
-    deferUnsubscribes = true;
-    KJ_DEFER(deferUnsubscribes = false);
-    for (auto& observer : observers) {
-      observer();
-    }
-    processDeferredUnsubscribes();
+  Subject() : base(_::newParameterSubjectBase()) {}
+  Subscription subscribe(Function<void(const T&)>&& callback) {
+    return Subscription(base->subscribe([callback = mv(callback)](const void* event) mutable {
+      callback(*static_cast<const T*>(event));
+    }));
   }
 
-  template <typename U = T, typename = EnableIf<!isSameType<U, void>()>>
-  void notify(const U& event) {
-    deferUnsubscribes = true;
-    KJ_DEFER(deferUnsubscribes = false);
-    for (auto& entry : observers) {
-      entry.value(event);
-    }
-    processDeferredUnsubscribes();
-  }
-
-  template <typename Func>
-  Subscription subscribe(Func&& observer) {
-    auto id = nextId++;
-    observers.insert(id, Function<void(T)>(mv(observer)));
-    return {addRef(), id};
-  }
-
-  Own<SubjectBase> addRef() {
-    return addRef(*this);
+  void notify(const T& event) {
+    base->notify(static_cast<const void*>(&event));
   }
 
 private:
-  uint nextId{0};
-  HashMap<uint, Function<void(T)>> observers;
-  bool deferUnsubscribes{false};
-  Vector<uint> deferredUnsubscribes;
+  Own<_::ParameterSubjectBase> base;
+};
 
-  void unsubscribe(uint id) override {
-    if (deferUnsubscribes) {
-      deferredUnsubscribes.add(id);
-    } else {
-      observers.erase(id);
-    }
+template <>
+class Subject<void>
+{
+public:
+  Subject() : base(_::newVoidSubjectBase()) {}
+
+  Subscription subscribe(Function<void()>&& callback) {
+    return Subscription(base->subscribe(mv(callback)));
   }
 
-  void processDeferredUnsubscribes() {
-    for (auto id : deferredUnsubscribes) {
-      unsubscribe(id);
-    }
-    deferredUnsubscribes.clear();
+  void notify() {
+    base->notify();
   }
+
+private:
+  Own<_::VoidSubjectBase> base;
 };
 
 }

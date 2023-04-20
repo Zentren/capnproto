@@ -1,6 +1,8 @@
 
 # kj ===========================================================================
 
+find_package(Boost REQUIRED)
+
 set(kj_sources_lite
   array.c++
   list.c++

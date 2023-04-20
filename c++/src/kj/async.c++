@@ -257,7 +257,7 @@ void Canceler::cancel(const Exception& exception) {
       break;
     }
   }
-  cancellationSubject->notify(exception);
+  cancellationSubject.notify(exception);
 }
 
 void Canceler::release() {
